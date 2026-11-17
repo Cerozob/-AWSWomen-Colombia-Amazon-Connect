@@ -1,0 +1,18 @@
+{
+  "suffix": "restaurant",
+  "countries": ["US"],
+  "claim_phone_numbers": false,
+  "tags": {
+    "example:project": "connect-restaurant-demo",
+    "example:owner": "your-team",
+    "example:environment": "demo"
+  },
+  "nag": {
+    "aws_solutions": false,
+    "hipaa_security": false,
+    "nist_800_53_r4": false,
+    "nist_800_53_r5": false,
+    "pci_dss_321": false,
+    "serverless": false
+  }
+}

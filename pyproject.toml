@@ -1,0 +1,13 @@
+[project]
+name = "connect-restaurant-demo"
+version = "0.1.0"
+description = "Demo: asistente telefónico con IA para pedidos a domicilio con Amazon Connect (CDK Python)"
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib>=2.267.0,<3.0.0",
+    "constructs>=10.5.0,<11.0.0",
+    "cdk-nag",
+]
+
+[dependency-groups]
+dev = ["pytest"]

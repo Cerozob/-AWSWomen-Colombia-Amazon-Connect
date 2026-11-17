@@ -1,0 +1,31 @@
+LOS JOESTAR — MENÚ Y DOMICILIOS (salchipapería ficticia de Bogotá, solo para demostración)
+
+SOBRE NOSOTROS
+Los Joestar es una salchipapería diferente en Bogotá. Es un negocio ficticio: todo lo que dice este documento es inventado y sirve solo para el demo.
+
+DOMICILIOS Y PAGO
+Todos los pedidos son a domicilio. El pago es únicamente contra entrega, en efectivo o con datáfono. No se recibe pago por teléfono.
+No hay valor mínimo de pedido ni costo de domicilio aparte.
+
+SALCHIPAPAS
+Cada salchipapa viene en tres tamaños: personal, mediana y familiar. Precios en pesos colombianos.
+Salchipapa clásica, con salchicha: personal 16.000, mediana 26.000, familiar 42.000.
+Salchipapa costeña, con butifarra y chorizo: personal 20.000, mediana 32.000, familiar 50.000.
+Salchipapa de pollo: personal 20.000, mediana 32.000, familiar 50.000.
+Salchipapa desmechada: personal 22.000, mediana 35.000, familiar 55.000.
+Salchipapa mixta con tocineta: personal 24.000, mediana 38.000, familiar 60.000.
+
+ADICIONALES
+Queso gratinado: 4.000 pesos.
+Huevos de codorniz: 3.000 pesos.
+Tocineta extra: 5.000 pesos.
+
+SALSAS
+Salsa rosada, salsa de piña y salsa de ají. Las salsas no tienen costo.
+
+BEBIDAS
+Coca-Cola personal: 5.000 pesos.
+Coca-Cola familiar: 9.000 pesos.
+Limonada natural: 7.000 pesos.
+Limonada de coco: 9.000 pesos.
+Agua: 4.000 pesos.
