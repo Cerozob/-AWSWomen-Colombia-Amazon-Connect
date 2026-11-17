@@ -1,0 +1,12 @@
+*.swp
+__pycache__
+.pytest_cache
+.venv
+*.egg-info
+cdk.out
+.cdk.staging
+
+# Local configuration (copy config.json.example)
+config.json
+.connect-alias-suffix
+.env
