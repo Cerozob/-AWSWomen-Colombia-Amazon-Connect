@@ -1,7 +1,6 @@
 from aws_cdk import CfnOutput, Stack
 from constructs import Construct
 
-from connect_demo_cdk.agentcore_gateway import PedidosGateway
 from connect_demo_cdk.amazon_connect import ConnectDemoResources
 from connect_demo_cdk.restaurant_backend import RestaurantBackend
 
@@ -20,16 +19,6 @@ class ConnectDemoCdkStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         backend = RestaurantBackend(self, "Backend")
-        # The alias is also the Connect instance URL (<alias>.my.connect.aws), which the
-        # gateway needs as its JWT discovery URL.
-        instance_alias = f"amazonconnect-{suffix}-{alias_suffix}"
-        gateway = PedidosGateway(
-            self,
-            "Gateway",
-            pedidos_fn=backend.pedidos_fn,
-            discovery_url=f"https://{instance_alias}.my.connect.aws/.well-known/openid-configuration",
-            suffix=suffix,
-        )
         resources = ConnectDemoResources(
             self,
             "Demo",
@@ -37,15 +26,14 @@ class ConnectDemoCdkStack(Stack):
             alias_suffix=alias_suffix,
             countries=countries or ["US"],
             claim_phone_numbers=claim_phone_numbers,
-            instance_alias=instance_alias,
-            gateway=gateway,
+            pedidos_fn=backend.pedidos_fn,
         )
+        backend.allow_connect(resources.instance.attr_arn)
 
         CfnOutput(self, "ConnectInstanceArn", value=resources.instance.attr_arn)
         CfnOutput(self, "DocumentsBucketName", value=resources.bucket.bucket_name)
         CfnOutput(self, "WisdomKbArn", value=resources.kb.attr_knowledge_base_arn)
         CfnOutput(self, "BotAliasArn", value=resources.bot_alias.attr_arn)
-        CfnOutput(self, "GatewayUrl", value=gateway.gateway.gateway_url)
         CfnOutput(self, "PedidosTableName", value=backend.pedidos.table_name)
         CfnOutput(self, "ToolCallsTableName", value=backend.tool_calls.table_name)
         CfnOutput(

@@ -60,10 +60,10 @@ class ConnectDemoResources(Construct):
             return "".join(parts)
         return cdk.Fn.join("", parts)
 
-    def __init__(self, scope: Construct, construct_id: str, suffix: str = "demo", alias_suffix: str = "0000", countries=None, claim_phone_numbers: bool = False, instance_alias=None, gateway=None, **kwargs) -> None:
+    def __init__(self, scope: Construct, construct_id: str, suffix: str = "demo", alias_suffix: str = "0000", countries=None, claim_phone_numbers: bool = False, pedidos_fn=None, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
-        if gateway is None:
-            raise ValueError("gateway (PedidosGateway con las herramientas MCP) es obligatorio")
+        if pedidos_fn is None:
+            raise ValueError("pedidos_fn (Lambda de pedidos) es obligatorio")
 
         countries = countries or ["US"]
 
@@ -90,7 +90,7 @@ class ConnectDemoResources(Construct):
             self,
             "ConnectInstance",
             identity_management_type="CONNECT_MANAGED",
-            instance_alias=instance_alias or f"amazonconnect-{suffix}-{alias_suffix}",
+            instance_alias=f"amazonconnect-{suffix}-{alias_suffix}",
             attributes=cfn_connect.CfnInstance.AttributesProperty(
                 inbound_calls=True,
                 outbound_calls=False,
@@ -521,33 +521,6 @@ class ConnectDemoResources(Construct):
         )
         kb_instance_assoc.node.add_dependency(self.kb)
 
-        # ── Register the AgentCore Gateway as an MCP application ──────────────
-        # Connect discovers MCP servers through AppIntegrations: an MCP_SERVER
-        # application whose namespace is the gateway ID and whose access URL is
-        # the gateway's MCP endpoint, associated to the instance (type APPLICATION).
-        mcp_app = appintegrations.CfnApplication(
-            self,
-            "PedidosMcpApplication",
-            name=f"pedidos-mcp-{suffix}",
-            namespace=gateway.gateway.gateway_id,
-            application_type="MCP_SERVER",
-            application_source_config=appintegrations.CfnApplication.ApplicationSourceConfigProperty(
-                external_url_config=appintegrations.CfnApplication.ExternalUrlConfigProperty(
-                    access_url=gateway.gateway.gateway_url,
-                )
-            ),
-            tags=[cdk.CfnTag(key="AmazonConnectEnabled", value="true")],
-        )
-        mcp_assoc = cfn_connect.CfnIntegrationAssociation(
-            self,
-            "PedidosMcpAssociation",
-            instance_id=self.instance.attr_arn,
-            integration_type="APPLICATION",
-            integration_arn=mcp_app.attr_application_arn,
-        )
-        mcp_assoc.node.add_dependency(self.instance)
-        mcp_assoc.node.add_dependency(gateway.audience_update)
-
         # ── AI Prompt (ORCHESTRATION) ─────────────────────────────────────────
         # The ORCHESTRATION prompt is authored in connect-assets/default_system_prompt.yaml
         # (the single source of truth for agent behavior) and loaded here at synth
@@ -952,15 +925,15 @@ class ConnectDemoResources(Construct):
                                 ],
                             },
                         ),
-                        # ── GuardarPedido / ConsultarPedido (MCP vía AgentCore Gateway) ─
-                        # Herramientas MCP: el agente las descubre en el gateway y las
-                        # llama directamente (sin volver al contact flow). El tool_id
-                        # es gateway_<gatewayId>__<destino>___<herramienta>; el esquema
-                        # de entrada lo aporta el servidor MCP.
+                        # ── GuardarPedido / ConsultarPedido (Return to Control) ─
+                        # El agente reúne los datos y devuelve el control al contact
+                        # flow. El nombre de la herramienta y sus argumentos llegan
+                        # como atributos de sesión de Lex; el flow invoca la Lambda de
+                        # pedidos, que escribe/lee en DynamoDB.
                         wisdom.CfnAIAgent.ToolConfigurationProperty(
                             tool_name="GuardarPedido",
-                            tool_type="MODEL_CONTEXT_PROTOCOL",
-                            tool_id=f"gateway_{gateway.gateway.gateway_id}__{gateway.TOOL_NAMES[0]}",
+                            tool_type="RETURN_TO_CONTROL",
+                            description="Save the caller's delivery order once every detail is collected and confirmed",
                             instruction=wisdom.CfnAIAgent.ToolInstructionProperty(
                                 instruction=(
                                     "Use this tool only after you have the items, the caller's name, phone, "
@@ -968,14 +941,38 @@ class ConnectDemoResources(Construct):
                                     "(including the total) by voice. Use products exactly as they appear on the menu."
                                 ),
                             ),
+                            input_schema={
+                                "type": "object",
+                                "properties": {
+                                    "nombre": {"type": "string", "description": "Name of the person receiving the order"},
+                                    "telefono": {"type": "string", "description": "Contact phone number, digits only"},
+                                    "direccion": {"type": "string", "description": "Street and number"},
+                                    "barrio": {"type": "string", "description": "Neighborhood (barrio)"},
+                                    "referencia": {"type": "string", "description": "Landmark, apartment or gate details; empty if none"},
+                                    "items": {
+                                        "type": "string",
+                                        "description": 'JSON array as text, e.g. [{"tipo":"desmechada","tamaño":"mediana","adicionales":"queso gratinado","cantidad":1}]',
+                                    },
+                                    "bebidas": {"type": "string", "description": "Drinks and quantities, e.g. '1 Coca-Cola personal'; empty if none"},
+                                    "total": {"type": "string", "description": "Order total in pesos, digits only, e.g. 36000"},
+                                },
+                                "required": ["nombre", "telefono", "direccion", "barrio", "items", "total"],
+                            },
                         ),
                         wisdom.CfnAIAgent.ToolConfigurationProperty(
                             tool_name="ConsultarPedido",
-                            tool_type="MODEL_CONTEXT_PROTOCOL",
-                            tool_id=f"gateway_{gateway.gateway.gateway_id}__{gateway.TOOL_NAMES[1]}",
+                            tool_type="RETURN_TO_CONTROL",
+                            description="Look up the status of an existing order by its five-digit order number",
                             instruction=wisdom.CfnAIAgent.ToolInstructionProperty(
                                 instruction="Use this when the caller asks about an order already placed and gives its order number.",
                             ),
+                            input_schema={
+                                "type": "object",
+                                "properties": {
+                                    "pedidoId": {"type": "string", "description": "Five-digit order number, digits only"},
+                                },
+                                "required": ["pedidoId"],
+                            },
                         ),
                         # ── Retrieve (knowledge-base search) ──────────────────
                         # The built-in Amazon Connect knowledge-base retrieval tool.
@@ -1027,17 +1024,13 @@ class ConnectDemoResources(Construct):
         # The Retrieve tool binds to the assistant–KB association id, so that
         # association must exist before the agent that references it is created.
         ai_agent.node.add_dependency(self.kb_assistant_association)
-        # The gateway must be ready (target created, audience updated) and registered
-        # on the Connect instance before the agent references its tools.
-        ai_agent.node.add_dependency(gateway.audience_update)
-        ai_agent.node.add_dependency(mcp_assoc)
 
         # Hash that changes whenever the agent's published content should change.
         # - prompt_hash: rolls the agent version when the prompt text changes.
         # - tool_config_version: bump this string manually whenever the agent's
         #   tool_configurations above are edited (e.g. adding/altering the Retrieve
         #   or RETURN_TO_CONTROL tools), so a new agent version is published.
-        tool_config_version = "tools-v3-mcp-gateway"
+        tool_config_version = "tools-v2-pedidos"
         agent_content_hash = hashlib.sha256(
             f"{prompt_hash}:{tool_config_version}".encode("utf-8")
         ).hexdigest()[:12]
@@ -1147,14 +1140,6 @@ class ConnectDemoResources(Construct):
             instance_arn=self.instance.attr_arn,
             security_profile_name=f"demoagent{suffix}SP",
             permissions=["Wisdom.View"],
-            # One MCP application entry: the gateway, with the tools the agent may call.
-            applications=[
-                cfn_connect.CfnSecurityProfile.ApplicationProperty(
-                    namespace=gateway.gateway.gateway_id,
-                    type="MCP",
-                    application_permissions=list(gateway.TOOL_NAMES),
-                )
-            ],
         )
         ai_agent_security_profile.node.add_dependency(ai_agent)
 
@@ -1341,6 +1326,7 @@ class ConnectDemoResources(Construct):
             "${AiAgentVersionArn}": ai_agent_version_arn,
             "${LexBotAliasArn}": lex_alias_arn,
             "${EscalationQueueArn}": self.escalation_queue.attr_queue_arn,
+            "${PedidosLambdaArn}": pedidos_fn.function_arn,
         }
         main_flow_content = self._interpolate_tokens(main_flow_template, placeholder_values)
 
@@ -1358,6 +1344,17 @@ class ConnectDemoResources(Construct):
         # The flow's Escalate path transfers to the escalation queue by ARN, so
         # the queue must exist before the flow that references it.
         self.main_flow.node.add_dependency(self.escalation_queue)
+
+        # The flow can only invoke the Lambda once it is registered on the instance.
+        lambda_assoc = cfn_connect.CfnIntegrationAssociation(
+            self,
+            "PedidosLambdaAssociation",
+            instance_id=self.instance.attr_arn,
+            integration_type="LAMBDA_FUNCTION",
+            integration_arn=pedidos_fn.function_arn,
+        )
+        lambda_assoc.node.add_dependency(self.instance)
+        self.main_flow.node.add_dependency(lambda_assoc)
 
         # ── Force live flow content to match source (drift correction) ────────
         # AWS::Connect::ContactFlow is only updated by CloudFormation when the
