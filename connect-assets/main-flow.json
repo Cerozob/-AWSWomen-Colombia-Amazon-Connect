@@ -127,7 +127,10 @@
         ],
         "parameters": {
           "TextToSpeechVoice": {
-            "languageCode": "es-US"
+            "languageCode": "en-US"
+          },
+          "TextToSpeechEngine": {
+            "voiceProvider": "connect:agentic"
           }
         },
         "overrideConsoleVoice": true,
@@ -197,6 +200,12 @@
         "lexV2BotName": "connect-bot",
         "lexV2BotAliasName": "Live",
         "conditionMetadata": []
+      },
+      "sesion-datos": {
+        "position": {
+          "x": 560,
+          "y": 400
+        }
       }
     },
     "Annotations": [],
@@ -434,24 +443,6 @@
                 "Escalate"
               ]
             }
-          },
-          {
-            "NextAction": "guardar-lambda",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": [
-                "GuardarPedido"
-              ]
-            }
-          },
-          {
-            "NextAction": "consultar-lambda",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": [
-                "ConsultarPedido"
-              ]
-            }
           }
         ],
         "Errors": [
@@ -464,9 +455,8 @@
     },
     {
       "Parameters": {
-        "TextToSpeechVoice": "Pedro",
-        "TextToSpeechEngine": "Generative",
-        "TextToSpeechStyle": "None"
+        "TextToSpeechVoice": "Gemma",
+        "TextToSpeechEngine": "connect:agentic"
       },
       "Identifier": "1763b77d-e6c9-4be6-ab3a-2d925ee45363",
       "Type": "UpdateContactTextToSpeechVoice",
@@ -482,7 +472,7 @@
     },
     {
       "Parameters": {
-        "LanguageCode": "es-US"
+        "LanguageCode": "en-US"
       },
       "Identifier": "a813b2ba-2989-4926-9a07-3245387f786b",
       "Type": "UpdateContactData",
@@ -519,7 +509,7 @@
       "Identifier": "Conversational AI-WHNndmc8cj",
       "Type": "UpdateContactData",
       "Transitions": {
-        "NextAction": "Conversational AI-BavQjw9Bwy",
+        "NextAction": "sesion-datos",
         "Errors": [
           {
             "NextAction": "0b2bb813-d791-4afc-88d3-88ed83b235b8",
@@ -530,12 +520,13 @@
     },
     {
       "Parameters": {
-        "Text": "Bienvenido a una salchipapería diferente, soy Carlos. ¿Quieres escuchar el menú?",
+        "Text": "Te damos la bienvenida a una salchipapería diferente, soy Carlos. ¿Quieres escuchar el menú?",
         "LexV2Bot": {
           "AliasArn": "${LexBotAliasArn}"
         },
         "LexSessionAttributes": {
-          "x-amz-lex:q-in-connect:ai-agent-arn": "${AiAgentVersionArn}"
+          "x-amz-lex:q-in-connect:ai-agent-arn": "${AiAgentVersionArn}",
+          "x-amz-lex:audio:locale-override": "es,en-US"
         }
       },
       "Identifier": "Conversational AI-BavQjw9Bwy",
@@ -556,200 +547,24 @@
     },
     {
       "Parameters": {
-        "LambdaFunctionARN": "${PedidosLambdaArn}",
-        "InvocationTimeLimitSeconds": "8",
+        "LambdaFunctionARN": "${SessionLambdaArn}",
+        "InvocationTimeLimitSeconds": "5",
         "InvocationType": "SYNCHRONOUS",
         "ResponseValidation": {
           "ResponseType": "STRING_MAP"
         },
         "LambdaInvocationAttributes": {
-          "accion": "guardar",
-          "nombre": "$.Lex.SessionAttributes.nombre",
-          "telefono": "$.Lex.SessionAttributes.telefono",
-          "direccion": "$.Lex.SessionAttributes.direccion",
-          "barrio": "$.Lex.SessionAttributes.barrio",
-          "referencia": "$.Lex.SessionAttributes.referencia",
-          "items": "$.Lex.SessionAttributes.items",
-          "bebidas": "$.Lex.SessionAttributes.bebidas",
-          "total": "$.Lex.SessionAttributes.total"
+          "sessionArn": "$.Wisdom.SessionArn",
+          "telefonoLlamante": "$.CustomerEndpoint.Address"
         }
       },
-      "Identifier": "guardar-lambda",
+      "Identifier": "sesion-datos",
       "Type": "InvokeLambdaFunction",
       "Transitions": {
-        "NextAction": "guardar-check",
+        "NextAction": "Conversational AI-BavQjw9Bwy",
         "Errors": [
           {
-            "NextAction": "guardar-fallo",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "ComparisonValue": "$.External.status"
-      },
-      "Identifier": "guardar-check",
-      "Type": "Compare",
-      "Transitions": {
-        "NextAction": "guardar-fallo",
-        "Conditions": [
-          {
-            "NextAction": "guardar-ok",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": [
-                "ok"
-              ]
-            }
-          }
-        ],
-        "Errors": [
-          {
-            "NextAction": "guardar-fallo",
-            "ErrorType": "NoMatchingCondition"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "Text": "Listo, tu pedido quedó registrado. Tu número de pedido es $.External.pedidoId. Lo pagas contra entrega. ¡Gracias por pedir en Los Joestar!"
-      },
-      "Identifier": "guardar-ok",
-      "Type": "MessageParticipant",
-      "Transitions": {
-        "NextAction": "b9bbbc48-19d8-4338-ae4b-d4124b45d1e7",
-        "Errors": [
-          {
-            "NextAction": "b9bbbc48-19d8-4338-ae4b-d4124b45d1e7",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "Text": "Lo siento, no pude registrar tu pedido. Te paso con una persona del negocio."
-      },
-      "Identifier": "guardar-fallo",
-      "Type": "MessageParticipant",
-      "Transitions": {
-        "NextAction": "db87b65f-d085-41e9-bb5c-693a20c4b343",
-        "Errors": [
-          {
-            "NextAction": "db87b65f-d085-41e9-bb5c-693a20c4b343",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "LambdaFunctionARN": "${PedidosLambdaArn}",
-        "InvocationTimeLimitSeconds": "8",
-        "InvocationType": "SYNCHRONOUS",
-        "ResponseValidation": {
-          "ResponseType": "STRING_MAP"
-        },
-        "LambdaInvocationAttributes": {
-          "accion": "consultar",
-          "pedidoId": "$.Lex.SessionAttributes.pedidoId"
-        }
-      },
-      "Identifier": "consultar-lambda",
-      "Type": "InvokeLambdaFunction",
-      "Transitions": {
-        "NextAction": "consultar-check",
-        "Errors": [
-          {
-            "NextAction": "consultar-fallo",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "ComparisonValue": "$.External.status"
-      },
-      "Identifier": "consultar-check",
-      "Type": "Compare",
-      "Transitions": {
-        "NextAction": "consultar-fallo",
-        "Conditions": [
-          {
-            "NextAction": "consultar-ok",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": [
-                "ok"
-              ]
-            }
-          }
-        ],
-        "Errors": [
-          {
-            "NextAction": "consultar-fallo",
-            "ErrorType": "NoMatchingCondition"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "Text": "Tu pedido $.External.pedidoId a nombre de $.External.nombre está en estado $.External.estado."
-      },
-      "Identifier": "consultar-ok",
-      "Type": "MessageParticipant",
-      "Transitions": {
-        "NextAction": "mas-ayuda",
-        "Errors": [
-          {
-            "NextAction": "mas-ayuda",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "Text": "No encontré ese número de pedido."
-      },
-      "Identifier": "consultar-fallo",
-      "Type": "MessageParticipant",
-      "Transitions": {
-        "NextAction": "mas-ayuda",
-        "Errors": [
-          {
-            "NextAction": "mas-ayuda",
-            "ErrorType": "NoMatchingError"
-          }
-        ]
-      }
-    },
-    {
-      "Parameters": {
-        "Text": "¿Te ayudo con algo más?",
-        "LexV2Bot": {
-          "AliasArn": "${LexBotAliasArn}"
-        },
-        "LexSessionAttributes": {
-          "x-amz-lex:q-in-connect:ai-agent-arn": "${AiAgentVersionArn}"
-        }
-      },
-      "Identifier": "mas-ayuda",
-      "Type": "ConnectParticipantWithLexBot",
-      "Transitions": {
-        "NextAction": "0b2bb813-d791-4afc-88d3-88ed83b235b8",
-        "Errors": [
-          {
-            "NextAction": "Escalate or terminate",
-            "ErrorType": "NoMatchingCondition"
-          },
-          {
-            "NextAction": "0b2bb813-d791-4afc-88d3-88ed83b235b8",
+            "NextAction": "Conversational AI-BavQjw9Bwy",
             "ErrorType": "NoMatchingError"
           }
         ]

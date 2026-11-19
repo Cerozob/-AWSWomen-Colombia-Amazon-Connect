@@ -5,29 +5,76 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "nombre": { "type": "string", "description": "Nombre de quien recibe el pedido" },
-        "telefono": { "type": "string", "description": "Teléfono de contacto, solo dígitos" },
-        "direccion": { "type": "string", "description": "Calle y número" },
-        "barrio": { "type": "string", "description": "Barrio" },
-        "referencia": { "type": "string", "description": "Punto de referencia, apartamento o portería; vacío si no hay" },
+        "nombre": {
+          "type": "string",
+          "description": "Nombre de quien recibe el pedido"
+        },
+        "telefono": {
+          "type": "string",
+          "description": "Teléfono de contacto, solo dígitos"
+        },
+        "direccion": {
+          "type": "string",
+          "description": "Calle y número"
+        },
+        "barrio": {
+          "type": "string",
+          "description": "Barrio"
+        },
+        "referencia": {
+          "type": "string",
+          "description": "Punto de referencia, apartamento o portería; vacío si no hay"
+        },
         "items": {
           "type": "array",
           "description": "Salchipapas del pedido",
           "items": {
             "type": "object",
             "properties": {
-              "tipo": { "type": "string", "description": "clásica, costeña, de pollo, desmechada o mixta con tocineta" },
-              "tamaño": { "type": "string", "description": "personal, mediana o familiar" },
-              "adicionales": { "type": "array", "items": { "type": "string" }, "description": "Adicionales como queso gratinado, huevos de codorniz o tocineta extra" },
-              "cantidad": { "type": "integer", "description": "Cantidad de esa salchipapa" }
+              "tipo": {
+                "type": "string",
+                "description": "clásica, costeña, de pollo, desmechada o mixta con tocineta"
+              },
+              "tamanio": {
+                "type": "string",
+                "description": "personal, mediana o familiar"
+              },
+              "adicionales": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Adicionales como queso gratinado, huevos de codorniz o tocineta extra"
+              },
+              "cantidad": {
+                "type": "integer",
+                "description": "Cantidad de esa salchipapa"
+              }
             },
-            "required": ["tipo", "tamaño", "cantidad"]
+            "required": [
+              "tipo",
+              "tamanio",
+              "cantidad"
+            ]
           }
         },
-        "bebidas": { "type": "string", "description": "Bebidas y cantidades, por ejemplo '1 Coca-Cola personal'; vacío si no hay" },
-        "total": { "type": "number", "description": "Total del pedido en pesos colombianos" }
+        "bebidas": {
+          "type": "string",
+          "description": "Bebidas y cantidades, por ejemplo '1 Coca-Cola personal'; vacío si no hay"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total del pedido en pesos colombianos"
+        }
       },
-      "required": ["nombre", "telefono", "direccion", "barrio", "items", "total"]
+      "required": [
+        "nombre",
+        "telefono",
+        "direccion",
+        "barrio",
+        "items",
+        "total"
+      ]
     }
   },
   {
@@ -36,9 +83,14 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "pedidoId": { "type": "string", "description": "Número de pedido de dos dígitos" }
+        "pedidoId": {
+          "type": "string",
+          "description": "Número de pedido de dos dígitos"
+        }
       },
-      "required": ["pedidoId"]
+      "required": [
+        "pedidoId"
+      ]
     }
   }
 ]

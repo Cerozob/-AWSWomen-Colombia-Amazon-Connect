@@ -10,3 +10,5 @@ cdk.out
 config.json
 .connect-alias-suffix
 .env
+
+.vscode*

@@ -35,7 +35,7 @@ class RestaurantBackend(Construct):
         self.pedidos = table("PedidosTable", dynamodb.Attribute(name="pedidoId", type=S))
         self.tool_calls = table(
             "ToolCallsTable",
-            dynamodb.Attribute(name="contactId", type=S),
+            dynamodb.Attribute(name="callId", type=S),
             dynamodb.Attribute(name="calledAt", type=N),
             ttl="expiresAt",
         )
@@ -61,12 +61,4 @@ class RestaurantBackend(Construct):
         )
         self.pedidos_fn.add_to_role_policy(
             iam.PolicyStatement(actions=["dynamodb:PutItem"], resources=[self.tool_calls.table_arn])
-        )
-
-    def allow_connect(self, instance_arn: str) -> None:
-        """Permite que el contact flow de esa instancia invoque la Lambda."""
-        self.pedidos_fn.add_permission(
-            "AllowConnectInvoke",
-            principal=iam.ServicePrincipal("connect.amazonaws.com"),
-            source_arn=instance_arn,
         )

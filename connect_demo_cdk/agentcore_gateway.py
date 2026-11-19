@@ -34,6 +34,7 @@ class PedidosGateway(Construct):
         pedidos_fn: _lambda.IFunction,
         discovery_url: str,
         suffix: str,
+        cr_role: iam.IRole,
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -57,19 +58,21 @@ class PedidosGateway(Construct):
         )
 
         # Reemplaza la audiencia temporal por el ID real del gateway.
+        # CDK usa UNA sola Lambda singleton para todos los AwsCustomResource del stack y
+        # el rol lo fija el primero que se crea: por eso este rol se comparte con
+        # ConnectDemoResources y los permisos de ambos viven en él.
+        cr_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:UpdateGateway", "bedrock-agentcore:GetGateway"],
+                resources=[self.gateway.gateway_arn],
+            )
+        )
+        cr_role.add_to_policy(iam.PolicyStatement(actions=["iam:PassRole"], resources=[self.gateway.role.role_arn]))
         update = cr.AwsCustomResource(
             self,
             "GatewayAudience",
             install_latest_aws_sdk=True,
-            policy=cr.AwsCustomResourcePolicy.from_statements(
-                [
-                    iam.PolicyStatement(
-                        actions=["bedrock-agentcore:UpdateGateway", "bedrock-agentcore:GetGateway"],
-                        resources=[self.gateway.gateway_arn],
-                    ),
-                    iam.PolicyStatement(actions=["iam:PassRole"], resources=[self.gateway.role.role_arn]),
-                ]
-            ),
+            role=cr_role,
             on_create=self._update_call(discovery_url, suffix),
             on_update=self._update_call(discovery_url, suffix),
         )

@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_connect as cfn_connect,
     aws_iam as iam,
     aws_kms as kms,
+    aws_lambda as _lambda,
     aws_lex as lex,
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
@@ -60,10 +61,10 @@ class ConnectDemoResources(Construct):
             return "".join(parts)
         return cdk.Fn.join("", parts)
 
-    def __init__(self, scope: Construct, construct_id: str, suffix: str = "demo", alias_suffix: str = "0000", countries=None, claim_phone_numbers: bool = False, pedidos_fn=None, **kwargs) -> None:
+    def __init__(self, scope: Construct, construct_id: str, suffix: str = "demo", alias_suffix: str = "0000", countries=None, claim_phone_numbers: bool = False, instance_alias=None, gateway=None, cr_role=None, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
-        if pedidos_fn is None:
-            raise ValueError("pedidos_fn (Lambda de pedidos) es obligatorio")
+        if gateway is None:
+            raise ValueError("gateway (PedidosGateway con las herramientas MCP) es obligatorio")
 
         countries = countries or ["US"]
 
@@ -90,7 +91,7 @@ class ConnectDemoResources(Construct):
             self,
             "ConnectInstance",
             identity_management_type="CONNECT_MANAGED",
-            instance_alias=f"amazonconnect-{suffix}-{alias_suffix}",
+            instance_alias=instance_alias or f"amazonconnect-{suffix}-{alias_suffix}",
             attributes=cfn_connect.CfnInstance.AttributesProperty(
                 inbound_calls=True,
                 outbound_calls=False,
@@ -106,16 +107,6 @@ class ConnectDemoResources(Construct):
         # Enable ENHANCED_CONTACT_MONITORING (Connect AI Agents) and BOT_MANAGEMENT
         # (required for Lex bots with Agentic Voice). These attributes are not
         # available as CfnInstance properties, so we use AwsCustomResource.
-        cr_role = iam.Role(
-            self,
-            "InstanceAttrRole",
-            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSLambdaBasicExecutionRole"
-                )
-            ],
-        )
         cr_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["connect:UpdateInstanceAttribute", "connect:DescribeInstanceAttribute"],
@@ -521,6 +512,33 @@ class ConnectDemoResources(Construct):
         )
         kb_instance_assoc.node.add_dependency(self.kb)
 
+        # ── Register the AgentCore Gateway as an MCP application ──────────────
+        # Connect discovers MCP servers through AppIntegrations: an MCP_SERVER
+        # application whose namespace is the gateway ID and whose access URL is
+        # the gateway's MCP endpoint, associated to the instance (type APPLICATION).
+        mcp_app = appintegrations.CfnApplication(
+            self,
+            "PedidosMcpApplication",
+            name=f"pedidos-mcp-{suffix}",
+            namespace=gateway.gateway.gateway_id,
+            application_type="MCP_SERVER",
+            application_source_config=appintegrations.CfnApplication.ApplicationSourceConfigProperty(
+                external_url_config=appintegrations.CfnApplication.ExternalUrlConfigProperty(
+                    access_url=gateway.gateway.gateway_url,
+                )
+            ),
+            tags=[cdk.CfnTag(key="AmazonConnectEnabled", value="true")],
+        )
+        mcp_assoc = cfn_connect.CfnIntegrationAssociation(
+            self,
+            "PedidosMcpAssociation",
+            instance_id=self.instance.attr_arn,
+            integration_type="APPLICATION",
+            integration_arn=mcp_app.attr_application_arn,
+        )
+        mcp_assoc.node.add_dependency(self.instance)
+        mcp_assoc.node.add_dependency(gateway.audience_update)
+
         # ── AI Prompt (ORCHESTRATION) ─────────────────────────────────────────
         # The ORCHESTRATION prompt is authored in connect-assets/default_system_prompt.yaml
         # (the single source of truth for agent behavior) and loaded here at synth
@@ -690,7 +708,7 @@ class ConnectDemoResources(Construct):
             auto_build_bot_locales=True,
             bot_locales=[
                 lex.CfnBot.BotLocaleProperty(
-                    locale_id="es_US",
+                    locale_id="en_US",
                     nlu_confidence_threshold=0.40,
                     speech_recognition_settings=lex.CfnBot.SpeechRecognitionSettingsProperty(
                         speech_model_preference="Advanced",
@@ -720,7 +738,7 @@ class ConnectDemoResources(Construct):
             bot_id=self.bot.attr_id,
             bot_version_locale_specification=[
                 lex.CfnBotVersion.BotVersionLocaleSpecificationProperty(
-                    locale_id="es_US",
+                    locale_id="en_US",
                     bot_version_locale_details=lex.CfnBotVersion.BotVersionLocaleDetailsProperty(
                         source_bot_version="DRAFT"
                     ),
@@ -737,7 +755,7 @@ class ConnectDemoResources(Construct):
             bot_version=self.bot_version.attr_bot_version,
             bot_alias_locale_settings=[
                 lex.CfnBotAlias.BotAliasLocaleSettingsItemProperty(
-                    locale_id="es_US",
+                    locale_id="en_US",
                     bot_alias_locale_setting=lex.CfnBotAlias.BotAliasLocaleSettingsProperty(
                         enabled=True,
                     ),
@@ -925,15 +943,15 @@ class ConnectDemoResources(Construct):
                                 ],
                             },
                         ),
-                        # ── GuardarPedido / ConsultarPedido (Return to Control) ─
-                        # El agente reúne los datos y devuelve el control al contact
-                        # flow. El nombre de la herramienta y sus argumentos llegan
-                        # como atributos de sesión de Lex; el flow invoca la Lambda de
-                        # pedidos, que escribe/lee en DynamoDB.
+                        # ── GuardarPedido / ConsultarPedido (MCP vía AgentCore Gateway) ─
+                        # Herramientas MCP: el agente las descubre en el gateway y las
+                        # llama directamente (sin volver al contact flow). El tool_id
+                        # es gateway_<gatewayId>__<destino>___<herramienta>; el esquema
+                        # de entrada lo aporta el servidor MCP.
                         wisdom.CfnAIAgent.ToolConfigurationProperty(
                             tool_name="GuardarPedido",
-                            tool_type="RETURN_TO_CONTROL",
-                            description="Save the caller's delivery order once every detail is collected and confirmed",
+                            tool_type="MODEL_CONTEXT_PROTOCOL",
+                            tool_id=f"gateway_{gateway.gateway.gateway_id}__{gateway.TOOL_NAMES[0]}",
                             instruction=wisdom.CfnAIAgent.ToolInstructionProperty(
                                 instruction=(
                                     "Use this tool only after you have the items, the caller's name, phone, "
@@ -941,38 +959,14 @@ class ConnectDemoResources(Construct):
                                     "(including the total) by voice. Use products exactly as they appear on the menu."
                                 ),
                             ),
-                            input_schema={
-                                "type": "object",
-                                "properties": {
-                                    "nombre": {"type": "string", "description": "Name of the person receiving the order"},
-                                    "telefono": {"type": "string", "description": "Contact phone number, digits only"},
-                                    "direccion": {"type": "string", "description": "Street and number"},
-                                    "barrio": {"type": "string", "description": "Neighborhood (barrio)"},
-                                    "referencia": {"type": "string", "description": "Landmark, apartment or gate details; empty if none"},
-                                    "items": {
-                                        "type": "string",
-                                        "description": 'JSON array as text, e.g. [{"tipo":"desmechada","tamaño":"mediana","adicionales":"queso gratinado","cantidad":1}]',
-                                    },
-                                    "bebidas": {"type": "string", "description": "Drinks and quantities, e.g. '1 Coca-Cola personal'; empty if none"},
-                                    "total": {"type": "string", "description": "Order total in pesos, digits only, e.g. 36000"},
-                                },
-                                "required": ["nombre", "telefono", "direccion", "barrio", "items", "total"],
-                            },
                         ),
                         wisdom.CfnAIAgent.ToolConfigurationProperty(
                             tool_name="ConsultarPedido",
-                            tool_type="RETURN_TO_CONTROL",
-                            description="Look up the status of an existing order by its five-digit order number",
+                            tool_type="MODEL_CONTEXT_PROTOCOL",
+                            tool_id=f"gateway_{gateway.gateway.gateway_id}__{gateway.TOOL_NAMES[1]}",
                             instruction=wisdom.CfnAIAgent.ToolInstructionProperty(
                                 instruction="Use this when the caller asks about an order already placed and gives its order number.",
                             ),
-                            input_schema={
-                                "type": "object",
-                                "properties": {
-                                    "pedidoId": {"type": "string", "description": "Five-digit order number, digits only"},
-                                },
-                                "required": ["pedidoId"],
-                            },
                         ),
                         # ── Retrieve (knowledge-base search) ──────────────────
                         # The built-in Amazon Connect knowledge-base retrieval tool.
@@ -998,6 +992,17 @@ class ConnectDemoResources(Construct):
                             tool_type="MODEL_CONTEXT_PROTOCOL",
                             tool_id="aws_service__qconnect_Retrieve",
                             override_input_values=[
+                                # Sin fijar $.assistantId el modelo lo inventa y Retrieve
+                                # responde "Unauthorized" (visto en prod en otro proyecto).
+                                wisdom.CfnAIAgent.ToolOverrideInputValueProperty(
+                                    json_path="$.assistantId",
+                                    value=wisdom.CfnAIAgent.ToolOverrideInputValueConfigurationProperty(
+                                        constant=wisdom.CfnAIAgent.ToolOverrideConstantInputValueProperty(
+                                            type="STRING",
+                                            value=self.assistant.attr_assistant_id,
+                                        )
+                                    ),
+                                ),
                                 wisdom.CfnAIAgent.ToolOverrideInputValueProperty(
                                     json_path="$.retrievalConfiguration.knowledgeSource.assistantAssociationIds",
                                     value=wisdom.CfnAIAgent.ToolOverrideInputValueConfigurationProperty(
@@ -1024,13 +1029,17 @@ class ConnectDemoResources(Construct):
         # The Retrieve tool binds to the assistant–KB association id, so that
         # association must exist before the agent that references it is created.
         ai_agent.node.add_dependency(self.kb_assistant_association)
+        # The gateway must be ready (target created, audience updated) and registered
+        # on the Connect instance before the agent references its tools.
+        ai_agent.node.add_dependency(gateway.audience_update)
+        ai_agent.node.add_dependency(mcp_assoc)
 
         # Hash that changes whenever the agent's published content should change.
         # - prompt_hash: rolls the agent version when the prompt text changes.
         # - tool_config_version: bump this string manually whenever the agent's
         #   tool_configurations above are edited (e.g. adding/altering the Retrieve
         #   or RETURN_TO_CONTROL tools), so a new agent version is published.
-        tool_config_version = "tools-v2-pedidos"
+        tool_config_version = "tools-v4-mcp-gateway-assistantid"
         agent_content_hash = hashlib.sha256(
             f"{prompt_hash}:{tool_config_version}".encode("utf-8")
         ).hexdigest()[:12]
@@ -1140,6 +1149,14 @@ class ConnectDemoResources(Construct):
             instance_arn=self.instance.attr_arn,
             security_profile_name=f"demoagent{suffix}SP",
             permissions=["Wisdom.View"],
+            # One MCP application entry: the gateway, with the tools the agent may call.
+            applications=[
+                cfn_connect.CfnSecurityProfile.ApplicationProperty(
+                    namespace=gateway.gateway.gateway_id,
+                    type="MCP",
+                    application_permissions=list(gateway.TOOL_NAMES),
+                )
+            ],
         )
         ai_agent_security_profile.node.add_dependency(ai_agent)
 
@@ -1158,66 +1175,67 @@ class ConnectDemoResources(Construct):
         # (install_latest_aws_sdk=False) silently fails to associate — which is
         # why the agent showed no security profile. Forcing the latest SDK is
         # exactly what the AWS sample does for this same call.
-        associate_agent_sp = cr.AwsCustomResource(
-            self,
-            "AgentSecurityProfileAssociation",
-            install_latest_aws_sdk=True,
-            policy=cr.AwsCustomResourcePolicy.from_statements(
-                [
-                    iam.PolicyStatement(
-                        actions=[
-                            "connect:AssociateSecurityProfiles",
-                            "connect:DisassociateSecurityProfiles",
-                            "wisdom:GetAIAgent",
-                        ],
-                        resources=["*"],
-                    )
-                ]
-            ),
-            on_create=cr.AwsSdkCall(
-                service="Connect",
-                action="associateSecurityProfiles",
-                parameters={
-                    "InstanceId": self.instance.attr_id,
-                    "EntityType": "AI_AGENT",
-                    "EntityArn": ai_agent.attr_ai_agent_arn,
-                    "SecurityProfiles": [{"Id": security_profile_id}],
-                },
-                physical_resource_id=cr.PhysicalResourceId.of(
-                    f"agent-sp-association-{suffix}"
-                ),
-            ),
-            on_update=cr.AwsSdkCall(
-                service="Connect",
-                action="associateSecurityProfiles",
-                parameters={
-                    "InstanceId": self.instance.attr_id,
-                    "EntityType": "AI_AGENT",
-                    "EntityArn": ai_agent.attr_ai_agent_arn,
-                    "SecurityProfiles": [{"Id": security_profile_id}],
-                },
-                physical_resource_id=cr.PhysicalResourceId.of(
-                    f"agent-sp-association-{suffix}"
-                ),
-            ),
-            on_delete=cr.AwsSdkCall(
-                service="Connect",
-                action="disassociateSecurityProfiles",
-                parameters={
-                    "InstanceId": self.instance.attr_id,
-                    "EntityType": "AI_AGENT",
-                    "EntityArn": ai_agent.attr_ai_agent_arn,
-                    "SecurityProfiles": [{"Id": security_profile_id}],
-                },
-                ignore_error_codes_matching="ResourceNotFoundException",
+        # Connect checks the EXACT agent ARN being invoked, so the profile is bound
+        # to the three forms: plain ARN (what the console shows), ":$LATEST" (what
+        # the flow uses) and the numeric published version. Pattern validated in the
+        # grupodeleste contact-center repo (prod 2026-11-03).
+        plain_agent_arn = cdk.Fn.select(0, cdk.Fn.split(":$LATEST", ai_agent.attr_ai_agent_arn))
+        version_number = cdk.Fn.select(
+            1, cdk.Fn.split(":", publish_ai_agent_version.attr_ai_agent_version_id)
+        )
+        sp_policy = cr.AwsCustomResourcePolicy.from_statements(
+            [
+                iam.PolicyStatement(
+                    actions=[
+                        "connect:AssociateSecurityProfiles",
+                        "connect:DisassociateSecurityProfiles",
+                        "wisdom:GetAIAgent",
+                    ],
+                    resources=["*"],
+                )
+            ]
+        )
+        sp_targets = (
+            ("AgentSecurityProfileAssociation", plain_agent_arn, f"agent-sp-association-{suffix}"),
+            ("AgentSecurityProfileLatest", ai_agent.attr_ai_agent_arn, f"agent-sp-latest-{suffix}"),
+            (
+                f"AgentSecurityProfileVersion{agent_content_hash}",
+                cdk.Fn.join("", [plain_agent_arn, ":", version_number]),
+                f"agent-sp-version-{suffix}-{agent_content_hash}",
             ),
         )
-        associate_agent_sp.node.add_dependency(ai_agent_security_profile)
-        associate_agent_sp.node.add_dependency(ai_agent)
-        associate_agent_sp.node.add_dependency(publish_ai_agent_version)
-        # Bind the profile only after the agent is fully published AND activated on
-        # the assistant, so the AI_AGENT entity is live when we associate it.
-        associate_agent_sp.node.add_dependency(activate_ai_agent)
+        for sp_id, entity_arn, physical_id in sp_targets:
+            sp_params = {
+                "InstanceId": self.instance.attr_id,
+                "EntityType": "AI_AGENT",
+                "EntityArn": entity_arn,
+                "SecurityProfiles": [{"Id": security_profile_id}],
+            }
+            associate = cr.AwsSdkCall(
+                service="Connect",
+                action="associateSecurityProfiles",
+                parameters=sp_params,
+                physical_resource_id=cr.PhysicalResourceId.of(physical_id),
+            )
+            associate_agent_sp = cr.AwsCustomResource(
+                self,
+                sp_id,
+                install_latest_aws_sdk=True,
+                policy=sp_policy,
+                on_create=associate,
+                on_update=associate,
+                on_delete=cr.AwsSdkCall(
+                    service="Connect",
+                    action="disassociateSecurityProfiles",
+                    parameters=sp_params,
+                    ignore_error_codes_matching="ResourceNotFoundException",
+                ),
+            )
+            associate_agent_sp.node.add_dependency(ai_agent_security_profile)
+            associate_agent_sp.node.add_dependency(ai_agent)
+            associate_agent_sp.node.add_dependency(publish_ai_agent_version)
+            # Bind only after the agent is published AND activated on the assistant.
+            associate_agent_sp.node.add_dependency(activate_ai_agent)
 
         # ── Escalation Queue ──────────────────────────────────────────────────
         # The contact flow's Escalate path transfers the caller to a real Connect
@@ -1272,7 +1290,7 @@ class ConnectDemoResources(Construct):
         # setup are all inlined):
         #   UpdateFlowLoggingBehavior -> UpdateContactRecordingAndAnalyticsBehavior
         #   -> CreateWisdomSession (+ OrchestrationAIAgentConfiguration) ->
-        #   UpdateContactData -> SetVoice (Pedro/Generative/es-US) ->
+        #   UpdateContactData -> SetVoice (Gemma, connect:agentic, en-US) ->
         #   UpdateContactData -> CreateWisdomSession -> UpdateContactData ->
         #   ConnectParticipantWithLexBot (AI agent ARN in the Lex session attrs).
         # Four placeholders are interpolated with deploy-time tokens:
@@ -1318,6 +1336,44 @@ class ConnectDemoResources(Construct):
         # version number is hardcoded: the ARN is a CDK token.
         ai_agent_version_arn = ai_agent.attr_ai_agent_arn
 
+        # ── Lambda de sesión: número de quien llama → variable del prompt ─────
+        # Carga {{$.Custom.telefonoLlamante}} en la sesión de Q in Connect para que
+        # el agente pueda usar "este mismo número" como teléfono del pedido.
+        session_fn = _lambda.Function(
+            self,
+            "SessionDataFunction",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=_lambda.Code.from_asset(
+                os.path.join(os.path.dirname(__file__), "..", "lambda", "session_data")
+            ),
+            timeout=cdk.Duration.seconds(5),
+        )
+        session_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["wisdom:UpdateSessionData"],
+                resources=[
+                    cdk.Fn.sub(
+                        "arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:session/${AssistantId}/*",
+                        {"AssistantId": self.assistant.attr_assistant_id},
+                    )
+                ],
+            )
+        )
+        session_fn.add_permission(
+            "AllowConnectInvoke",
+            principal=iam.ServicePrincipal("connect.amazonaws.com"),
+            source_arn=self.instance.attr_arn,
+        )
+        session_fn_assoc = cfn_connect.CfnIntegrationAssociation(
+            self,
+            "SessionLambdaAssociation",
+            instance_id=self.instance.attr_arn,
+            integration_type="LAMBDA_FUNCTION",
+            integration_arn=session_fn.function_arn,
+        )
+        session_fn_assoc.node.add_dependency(self.instance)
+
         # Map sentinel -> CDK token, then interleave literal chunks and tokens into
         # one Fn::Join. This resolves to the exact same string as a completed
         # Fn::Sub, but without Fn::Sub's ${...}/$ scanning of the flow body.
@@ -1326,7 +1382,7 @@ class ConnectDemoResources(Construct):
             "${AiAgentVersionArn}": ai_agent_version_arn,
             "${LexBotAliasArn}": lex_alias_arn,
             "${EscalationQueueArn}": self.escalation_queue.attr_queue_arn,
-            "${PedidosLambdaArn}": pedidos_fn.function_arn,
+            "${SessionLambdaArn}": session_fn.function_arn,
         }
         main_flow_content = self._interpolate_tokens(main_flow_template, placeholder_values)
 
@@ -1344,17 +1400,7 @@ class ConnectDemoResources(Construct):
         # The flow's Escalate path transfers to the escalation queue by ARN, so
         # the queue must exist before the flow that references it.
         self.main_flow.node.add_dependency(self.escalation_queue)
-
-        # The flow can only invoke the Lambda once it is registered on the instance.
-        lambda_assoc = cfn_connect.CfnIntegrationAssociation(
-            self,
-            "PedidosLambdaAssociation",
-            instance_id=self.instance.attr_arn,
-            integration_type="LAMBDA_FUNCTION",
-            integration_arn=pedidos_fn.function_arn,
-        )
-        lambda_assoc.node.add_dependency(self.instance)
-        self.main_flow.node.add_dependency(lambda_assoc)
+        self.main_flow.node.add_dependency(session_fn_assoc)
 
         # ── Force live flow content to match source (drift correction) ────────
         # AWS::Connect::ContactFlow is only updated by CloudFormation when the

@@ -1,15 +1,15 @@
 """Guarda y consulta pedidos a domicilio de Los Joestar en DynamoDB.
 
-Lo invoca el contact flow de Amazon Connect (bloque "Invoke AWS Lambda function")
-cuando el agente de IA llama a las herramientas `GuardarPedido` o `ConsultarPedido`.
-Connect envía los datos en `event["Details"]["Parameters"]` (más `accion`, que fija
-el contact flow) y espera un mapa plano de strings.
+Es el destino Lambda del AgentCore Gateway: el gateway expone `GuardarPedido` y
+`ConsultarPedido` como herramientas MCP y entrega los argumentos directamente en
+`event`. El nombre de la herramienta llega en el contexto de la invocación
+(`bedrockAgentCoreToolName`, con formato `<destino>___<herramienta>`).
 """
 import json
 import os
 import random
 import time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import boto3
 from botocore.exceptions import ClientError
@@ -18,7 +18,7 @@ _ddb = boto3.resource("dynamodb")
 _pedidos = _ddb.Table(os.environ["PEDIDOS_TABLE"])
 _tool_calls = _ddb.Table(os.environ["TOOL_CALLS_TABLE"])
 
-REQUIRED = ("nombre", "telefono", "direccion", "barrio", "items")
+REQUIRED = ("nombre", "telefono", "direccion", "barrio")
 TTL_SECONDS = 30 * 24 * 3600  # la bitácora de herramientas expira a los 30 días
 
 
@@ -27,84 +27,98 @@ def _clean(value, limit=500):
 
 
 def _parse_items(raw):
-    """El agente envía `items` como texto JSON: [{tipo, tamaño, adicionales, cantidad}]."""
-    try:
-        items = json.loads(raw)
-        if isinstance(items, list):
-            return [
-                {
-                    "tipo": _clean(i.get("tipo"), 60),
-                    "tamaño": _clean(i.get("tamaño"), 30),
-                    "adicionales": _clean(i.get("adicionales"), 200),
-                    "cantidad": int(i.get("cantidad") or 1),
-                }
-                for i in items
-                if isinstance(i, dict)
-            ]
-    except (ValueError, TypeError):
-        pass
-    return []
+    """Acepta la lista de `items` del esquema MCP (o su versión en texto JSON)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    items = []
+    for i in raw:
+        if not isinstance(i, dict) or not _clean(i.get("tipo")):
+            continue
+        extras = i.get("adicionales") or []
+        if isinstance(extras, str):
+            extras = [extras]
+        items.append(
+            {
+                "tipo": _clean(i.get("tipo"), 60),
+                "tamanio": _clean(i.get("tamanio"), 30),
+                "adicionales": [_clean(e, 60) for e in extras],
+                "cantidad": int(i.get("cantidad") or 1),
+            }
+        )
+    return items
 
 
-def _log_tool_call(contact_id, tool, params, now):
+def _tool_name(event, context):
+    custom = getattr(getattr(context, "client_context", None), "custom", None) or {}
+    name = custom.get("bedrockAgentCoreToolName", "")
+    if name:
+        return name.split("___")[-1]
+    return "ConsultarPedido" if "pedidoId" in event else "GuardarPedido"
+
+
+def _log_tool_call(call_id, tool, args, now):
     # Toda llamada queda registrada, incluso si luego falla la validación.
     _tool_calls.put_item(
         Item={
-            "contactId": contact_id,
+            "callId": call_id,
             "calledAt": now,
             "toolName": tool,
-            "arguments": {k: _clean(v) for k, v in params.items()},
+            "arguments": json.dumps(args, ensure_ascii=False)[:2000],
             "expiresAt": now + TTL_SECONDS,
         }
     )
 
 
-def _guardar(params, contact_id, caller_phone, now):
-    missing = [k for k in REQUIRED if not _clean(params.get(k)) and k != "telefono"]
-    items = _parse_items(params.get("items"))
-    if "items" not in missing and not items:
+def _guardar(args, call_id, now):
+    missing = [k for k in REQUIRED if not _clean(args.get(k))]
+    items = _parse_items(args.get("items"))
+    if not items:
         missing.append("items")
-    telefono = _clean(params.get("telefono"), 30) or caller_phone
-    if not telefono:
-        missing.append("telefono")
     if missing:
-        return {"status": "error", "missing": ",".join(missing), "pedidoId": ""}
+        return {"status": "error", "missing": ",".join(missing)}
     try:
-        total = Decimal(str(params.get("total") or 0))
-    except ArithmeticError:
+        total = Decimal(str(args.get("total") or 0))
+    except InvalidOperation:
         total = Decimal(0)
 
-    for _ in range(5):  # id de 5 dígitos, fácil de dictar por teléfono
-        pedido_id = str(random.randint(10000, 99999))
+    # Id de 2 dígitos (10-99): fácil de dictar por teléfono en un demo. Solo hay 90
+    # números; si colisiona se reintenta y, con la tabla llena, el guardado falla.
+    for _ in range(20):
+        pedido_id = str(random.randint(10, 99))
         try:
             _pedidos.put_item(
                 Item={
                     "pedidoId": pedido_id,
-                    "nombre": _clean(params["nombre"], 100),
-                    "telefono": telefono,
-                    "direccion": _clean(params["direccion"]),
-                    "barrio": _clean(params["barrio"], 100),
-                    "referencia": _clean(params.get("referencia")),
+                    "nombre": _clean(args["nombre"], 100),
+                    "telefono": _clean(args["telefono"], 30),
+                    "direccion": _clean(args["direccion"]),
+                    "barrio": _clean(args["barrio"], 100),
+                    "referencia": _clean(args.get("referencia")),
                     "items": items,
-                    "bebidas": _clean(params.get("bebidas")),
+                    "bebidas": _clean(args.get("bebidas")),
                     "total": total,
                     "estado": "RECIBIDO",
                     "creadoEn": now,
-                    "contactId": contact_id,
+                    "callId": call_id,
                 },
                 ConditionExpression="attribute_not_exists(pedidoId)",
             )
-            return {"status": "ok", "pedidoId": pedido_id, "missing": ""}
+            return {"status": "ok", "pedidoId": pedido_id}
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
-    return {"status": "error", "missing": "", "pedidoId": ""}
+    return {"status": "error", "missing": ""}
 
 
-def _consultar(params):
-    item = _pedidos.get_item(Key={"pedidoId": _clean(params.get("pedidoId"), 10)}).get("Item")
+def _consultar(args):
+    item = _pedidos.get_item(Key={"pedidoId": _clean(args.get("pedidoId"), 10)}).get("Item")
     if not item:
-        return {"status": "not_found", "estado": "", "pedidoId": ""}
+        return {"status": "not_found"}
     return {
         "status": "ok",
         "pedidoId": item["pedidoId"],
@@ -114,16 +128,11 @@ def _consultar(params):
     }
 
 
-def handler(event, _context):
-    details = event.get("Details", {})
-    params = details.get("Parameters", {})
-    contact = details.get("ContactData", {})
-    contact_id = _clean(contact.get("ContactId"), 100) or "unknown"
-    caller_phone = _clean(contact.get("CustomerEndpoint", {}).get("Address"), 30)
+def handler(event, context):
     now = int(time.time())
-
-    consultar = params.get("accion") == "consultar"
-    _log_tool_call(contact_id, "ConsultarPedido" if consultar else "GuardarPedido", params, now)
-    if consultar:
-        return _consultar(params)
-    return _guardar(params, contact_id, caller_phone, now)
+    tool = _tool_name(event, context)
+    call_id = getattr(context, "aws_request_id", "") or "local"
+    _log_tool_call(call_id, tool, event, now)
+    if tool == "ConsultarPedido":
+        return _consultar(event)
+    return _guardar(event, call_id, now)
